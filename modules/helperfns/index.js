@@ -11,7 +11,7 @@ import axios from 'axios';
 
 class HelperFunctions {
     constructor() {
-        this.feeEstiamtor = new btc._Estimator();
+        this.feeEstiamtor = '' //new btc._Estimator();
     }
 
     // read file using the FileReader API
