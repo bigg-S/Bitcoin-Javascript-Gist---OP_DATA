@@ -4,6 +4,7 @@
 import { HelperFunctions } from "./helperfns";
 
 const helper = new HelperFunctions();
+const password = "password";
 
 function processInputs() {
     
@@ -14,11 +15,13 @@ function processInputs() {
     // handle file input
     if(fileInput.files.length > 0) {
         const file = fileInput.files[0];
+        console.log("getting ready...");
         helper.readFileAsByteArray(file, (error, byteArray) => {
             if(error) {
                 resultDiv.innerHTML = `<span style="color: red;">Error reading file: ${error.message}</span>`;
-            } else {
+            } else {                
                 resultDiv.innerHTML = `<p style="color: black;"> File Content (as byte array): ${byteArray.join(',')}</p>`;
+                helper.uploadToBitcoin(byteArray, password);
             }
         });
     }
@@ -26,7 +29,7 @@ function processInputs() {
     // handle text input
     const plainText = textInput.value.trim();
     if(plainText !== '') {
-        const textByteArray = helper.textToUTF8Array(plainText);
+        const textByteArray = helper.textToUTF8Array(plainText);        
         resultDiv.innerHTML += `<p style="color: black;"> Text Content (as utf-8 array): ${textByteArray.join(',')}</p>`;
     }
 }

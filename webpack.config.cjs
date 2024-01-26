@@ -28,8 +28,13 @@ module.exports = {
     ],
   },
   devServer: {
-    contentBase: './dist',
+    liveReload: true,
     open: true,
+    static: {
+      directory: path.resolve(__dirname, '.'), // Adjust the path based on your project structure
+    },
+    compress: true, // Enable gzip compression for everything served
+    hot: true, // Enable hot module replacement (HMR)
   },
   // Avoid 'eval' in source-map for better debugging
   devtool: 'source-map',

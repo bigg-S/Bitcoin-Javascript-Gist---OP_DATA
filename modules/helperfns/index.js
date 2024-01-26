@@ -7,11 +7,16 @@ import * as bip39 from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english';
 import { HDKey } from '@scure/bip32';
 import * as btc from '@scure/btc-signer';
+
 import axios from 'axios';
+
+import { Buffer } from 'buffer';
 
 class HelperFunctions {
     constructor() {
-        this.feeEstiamtor = '' //new btc._Estimator();
+        this.mnemonic = this.generateMnemonic();
+        console.log("Am in the constructor!");
+        this.feeEstiamtor = ''; //new btc._Estimator({});
     }
 
     // read file using the FileReader API
@@ -102,41 +107,77 @@ class HelperFunctions {
 
     // derive key pairs
     derivePrivateKey(seed){
-        const masterKey = HDKey.fromMasterSeed(seed);
-        const path = "m/44' /0' /0' /0/0"; //bip44 path
+        console.log("Master key!", seed);
+        const masterKey = HDKey.fromMasterSeed(seed);        
+        const path = "m/44'/0'/0'/0/0"; //bip44 path
         const privateKey = masterKey.derive(path).privateKey;
         return privateKey;
     }
 
     // create a transaction
-    async createTransaction(data, privateKey) {
+    async createOPPushDataTransaction(data, privateKey) {
         try {
             // initislize transaction builder
             const txBuilder = new btc.Transaction();
 
-            // define output with OP_PUSHDATA (creating an output script containig OP_PUSHDATA prefix indicating variable length, bytelendgth of the data and the actual data byte array)
-            const outputScript = new Uint8Array([0x4c, data.length]).join(data);
+            // Assuming `data` is a byte array containing the correct data:
+            const dataHex = Buffer.from(data).toString('hex');
+                    
+            // Ensure even hex length:
+            const adjustedDataHex = dataHex.length % 2 === 0 ? dataHex : '0' + dataHex;
+                    
+            // Calculate correct push size:
+            const dataLength = adjustedDataHex.length / 2;
+            const pushSize = dataLength <= 75 ? dataLength : Math.ceil(Math.log2(dataLength) / 8) + 76;
+                    
+            // Construct complete output script:
+            const outputScript = `OP_RETURN ${pushSize.toString(16)}${adjustedDataHex}`;
+            //new Uint8Array([0x4c + data.length]).join(data);
+
+            console.log("Output script: ", outputScript);
 
             // add the output with a value of 0 (no value transfer)
             txBuilder.addOutput({
-                script: outputScript,
-                value: 0,
+                script: script,
+                amount: BigInt("0")
             });
 
+            // Fund transaction (assuming a UTXO with sufficient funds)
+            const inputUtxo = {
+                // Replace with actual UTXO details
+                txId: '...',
+                vout: 0,
+                scriptPubKey: '...',
+                satoshis: 100000,
+              };
+              transaction.addInput(inputUtxo);
+
             // set teh network parameters
-            txBuilder.setNetwork("testnet"); // here you can use the other networks i.e mainnet, regtest as needed
+            //txBuilder. // here you can use the other networks i.e mainnet, regtest as needed
 
-            // estimate the transaction fee
-            const feeRate = await this.getEstimatedFee();
-            const estimatedFee = Math.ceil(txBuilder.fee({feeRate}));
+            // console.log("Estimating transaction fee...");
+            // // estimate the transaction fee
+            // const feeRate = await this.getEstimatedFee();
+            // console.log("Fee rate: ", feeRate);
+            // const estimatedFee = Math.ceil(txBuilder.fee({feeRate}));
+            // console.log("Fee rate: ", estimatedFee);
 
-            // add inputs to cover the data output and transaction fee
-            const inputs = await this.getInputs(estimatedFee, privateKey);
+            // console.log("Generating inputs...")
+            // // add inputs to cover the data output and transaction fee
+            // const inputs = await this.getInputs(estimatedFee, privateKey);
+            // console.log("Inputs: ", inputs);
 
-            // add the inputs to the transaction
-            for(const input of inputs){
-                txBuilder.addInput(input.txid, input.vout, 0xffffffff, Buffer.from(input.script, 'hex'))
-            }
+            // // add the inputs to the transaction
+            // for(const input of inputs){
+            //     txBuilder.addInput({
+            //         txid: input.txid, 
+            //         index: input.index,
+            //         witnessUtxo: {
+            //             amount: input.amount,
+            //             script: Buffer.from(input.script, 'hex')
+            //         }
+            //     })
+            // }
 
             // sign the transaction
             txBuilder.sign(0, privateKey);
@@ -145,6 +186,34 @@ class HelperFunctions {
             return txBuilder.build();
         } catch(error) {
             this.handleError(error);
+        }
+    }
+
+    // transfer transaction (transaction will be used to generate the previous transaction id and index)
+    async createTransferTransaction(transaction, minterAddress, privateKey, password, network = 'testnet') {
+        try {
+      
+          // Create transaction with minter address as output
+          const transaction = new btc.TransactionBuilder(network);
+          transaction.addOutput(minterAddress, 0); // Assuming you want to send all funds
+      
+          // Use UTXO from previous transaction as input
+          transaction.addInput({
+            txId: previousTransactionId,
+            vout: previousOutputIndex,
+            // ScriptPubKey will be fetched from the network
+          });
+      
+          // Sign transaction with private key
+          transaction.sign(privateKey);
+      
+          // Broadcast transaction
+          const serializedTx = transaction.buildIncomplete();
+          await this.broadcastTx(network, serializedTx);
+      
+          console.log("Transaction broadcasted:", txHex);
+        } catch (error) {
+          console.error("Error creating or broadcasting transaction:", error);
         }
     }
 
@@ -173,30 +242,39 @@ class HelperFunctions {
     }
 
     // upload file or write plain text to bitcoin mainchain
-    uploadToBitcoin(data) {
+    uploadToBitcoin(data, password) {
+        console.log("Starting the upload process: ", data);
         try {
-            const mnemonic = this.generateMnemonic();
+            const mnemonic = this.mnemonic;
             console.log("Generated mnemonic: ", mnemonic);
 
             // valiadet mnemonic for being 12 words
             if(this.validateMnemonic(mnemonic)) {
                 // derive key data from mnemonic(generate seed)
-                const seed = bip39.mnemonicToSeedSync(mnemonic, process.env.PASSWORD); // password is optional
-
+                const seed = bip39.mnemonicToSeedSync(mnemonic, password); // password is optional
+                console.log("The mnemonic was valid!", seed);
                 //derive private key from master key for address ("m/44' /0' /0' /0/0")
                 const privateKey = this.derivePrivateKey(seed);
+                console.log("Private Key", privateKey);
 
                 // build the transaction (signed)
-                const transaction = this.createTransaction(data, privateKey);
+                const transaction = this.createOPPushDataTransaction(data, privateKey);
+                console.log("Transaction: ", transaction);
+
+                //generate minter address
+
+                const transferTransaction = this.createTransferTransaction(transaction, minterAddress, privateKey, network="testnet", password)
+
+                console.log("Transfer transaction: ", transferTransaction);
 
                 // broadcast the transaction
-                this.broadcastTx(transaction);         
+                //this.broadcastTx(transaction);         
             
             } else {
                 this.handleError("Invalid mnemonic");
             }
         } catch(error) {
-            this.handleError(error);
+            this.handleError("Error during upload: " + error);
         }
     }
 
@@ -208,7 +286,7 @@ class HelperFunctions {
 
     // handle errors
     handleError(message) {
-        console.error(message);
+        console.log(message);
         const resultDiv = document.getElementById('result');
         resultDiv.innerHTML = `<span style="color: red;">Error: ${message}</span>`;
     }
