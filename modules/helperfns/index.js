@@ -115,24 +115,20 @@ class HelperFunctions {
     }
 
     // create a transaction
-    async createOPPushDataTransaction(data, privateKey) {
+    async createOPPushDataTransaction(data, privateKey, network) {
         try {
             // initislize transaction builder
-            const txBuilder = new btc.Transaction();
+            const txBuilder = new btc.Transaction(network);
 
             // Assuming `data` is a byte array containing the correct data:
             const dataHex = Buffer.from(data).toString('hex');
-                    
-            // Ensure even hex length:
-            const adjustedDataHex = dataHex.length % 2 === 0 ? dataHex : '0' + dataHex;
-                    
-            // Calculate correct push size:
-            const dataLength = adjustedDataHex.length / 2;
-            const pushSize = dataLength <= 75 ? dataLength : Math.ceil(Math.log2(dataLength) / 8) + 76;
-                    
+            
+            const pushSize = dataHex.length / 2 <= 75 ? 1 : Math.ceil(Math.log2(dataHex.length / 2) / 8) + 76;
+            
+            const adjustedDataHex = pushSize.toString(16) + dataHex;
+            
             // Construct complete output script:
-            const outputScript = `OP_RETURN ${pushSize.toString(16)}${adjustedDataHex}`;
-            //new Uint8Array([0x4c + data.length]).join(data);
+            const outputScript = `OP_RETURN ${adjustedDataHex}`;
 
             console.log("Output script: ", outputScript);
 
@@ -152,49 +148,22 @@ class HelperFunctions {
               };
               transaction.addInput(inputUtxo);
 
-            // set teh network parameters
-            //txBuilder. // here you can use the other networks i.e mainnet, regtest as needed
-
-            // console.log("Estimating transaction fee...");
-            // // estimate the transaction fee
-            // const feeRate = await this.getEstimatedFee();
-            // console.log("Fee rate: ", feeRate);
-            // const estimatedFee = Math.ceil(txBuilder.fee({feeRate}));
-            // console.log("Fee rate: ", estimatedFee);
-
-            // console.log("Generating inputs...")
-            // // add inputs to cover the data output and transaction fee
-            // const inputs = await this.getInputs(estimatedFee, privateKey);
-            // console.log("Inputs: ", inputs);
-
-            // // add the inputs to the transaction
-            // for(const input of inputs){
-            //     txBuilder.addInput({
-            //         txid: input.txid, 
-            //         index: input.index,
-            //         witnessUtxo: {
-            //             amount: input.amount,
-            //             script: Buffer.from(input.script, 'hex')
-            //         }
-            //     })
-            // }
-
             // sign the transaction
-            txBuilder.sign(0, privateKey);
+            txBuilder.sign(privateKey, 0);
 
             // return the signed transaction
-            return txBuilder.build();
+            return txBuilder
         } catch(error) {
             this.handleError(error);
         }
     }
 
     // transfer transaction (transaction will be used to generate the previous transaction id and index)
-    async createTransferTransaction(transaction, minterAddress, privateKey, password, network = 'testnet') {
+    async createTransferTransaction(previousTransactionId, previousOutputIndex, minterAddress, privateKey, network) {
         try {
       
           // Create transaction with minter address as output
-          const transaction = new btc.TransactionBuilder(network);
+          const transaction = new btc.Transaction(network);
           transaction.addOutput(minterAddress, 0); // Assuming you want to send all funds
       
           // Use UTXO from previous transaction as input
@@ -205,13 +174,12 @@ class HelperFunctions {
           });
       
           // Sign transaction with private key
-          transaction.sign(privateKey);
+          transaction.sign(privateKey, 0);
       
           // Broadcast transaction
-          const serializedTx = transaction.buildIncomplete();
-          await this.broadcastTx(network, serializedTx);
+          await this.broadcastTx(network, transaction);
       
-          console.log("Transaction broadcasted:", txHex);
+          console.log("Transaction broadcasted:", transaction);
         } catch (error) {
           console.error("Error creating or broadcasting transaction:", error);
         }
@@ -220,8 +188,8 @@ class HelperFunctions {
     // broadcast the transaction
     async broadcastTx(signedTx) {
         try {
-            // the bitcoin node API for broadcasting
-            const nodeUrl = process.env.BITCOIN_API;
+            // Choose a reliable Bitcoin testnet API endpoint
+            const apiEndpoint = 'https://blockstream.info/testnet/api/tx';
 
             // build the request body
             const requestBody = {
@@ -230,7 +198,7 @@ class HelperFunctions {
             };
 
              // send the POST request to broadcast the transaction
-            const response = await axios.post(nodeUrl, requestBody);
+            const response = await axios.post(apiEndpoint, requestBody);
 
             console.log("Transaction broadcast successfully: ", response.data);
             this.displayResults(response.data);
@@ -257,13 +225,17 @@ class HelperFunctions {
                 const privateKey = this.derivePrivateKey(seed);
                 console.log("Private Key", privateKey);
 
-                // build the transaction (signed)
-                const transaction = this.createOPPushDataTransaction(data, privateKey);
+                // build the transaction to push data to bitcoin networks
+                const transaction = this.createOPPushDataTransaction(data, privateKey, network="testnet");
                 console.log("Transaction: ", transaction);
 
-                //generate minter address
+                const prevTxId = transaction.id;
 
-                const transferTransaction = this.createTransferTransaction(transaction, minterAddress, privateKey, network="testnet", password)
+                //generate minter address
+                const minterAddress = '0001111001100011';
+
+                // we will use 0 as the previous transaction index (the first output)
+                const transferTransaction = this.createTransferTransaction(prevTxId, 0, minterAddress, privateKey, network="testnet")
 
                 console.log("Transfer transaction: ", transferTransaction);
 
