@@ -35,6 +35,8 @@ var walletB = {
     privateKey: 'cVj6geQqVGesfcr5KrmzpB4FwydzCviuBcGCJfuAJX6V5qqMqBpr'
 }
 
+var isSecondTransaction = false;
+
 class HelperFunctions{
     constructor() {}
 
@@ -72,6 +74,7 @@ class HelperFunctions{
 
             const inputs = [];
             let totalAmountAvailable = 0;
+            var outputCount = 2; // assume is first transaction be default(one for recipient  and one for change)
 
             for (const element of utxos) {
                 const utxo = {
@@ -84,22 +87,25 @@ class HelperFunctions{
                 totalAmountAvailable += utxo.satoshi;
                 inputs.push(utxo);
             }
+
+            const inputCount = inputs.length;
+
+            if(!isSecondTransaction){
+                outputCount = 1; // Only one output for minter address
+            }
             
             const satoshiToSend = amount * 100000000;
-            var outputCount = 2 // one for recipient  and one for change
 
             // calculate fee
             const transactionSize = inputCount * 100 + outputCount * 34 + 10 - inputCount;
-            let fee = transactionSize * 33;
+            let fee = transactionSize * 33;            
 
-            if(totalAmountAvailable - satoshiToSend - fee < 0){
-                this.handleError("Insufficient funds");
-                throw new Error("Insufficient funds!");
-            }
+            const finalAmount = totalAmountAvailable - satoshiToSend - fee;
 
-            return inputs;
+            return { inputs, finalAmount, fee};
         } catch(error) {
             this.handleError(error);
+            console.log("An error occurred while getting inputs");
         }
     }
 
@@ -108,9 +114,16 @@ class HelperFunctions{
         try {
             const network = "BTCTEST"; // our network
 
-            const inputs = await this.getInputs(unspentUrl, network, fromAddress);
+            const result = await this.getInputs(unspentUrl, network, fromAddress);
 
-            console.log("Inputs: ", inputs);
+            console.log("Inputs: ", result.inputs);
+            console.log("Satosi to send: ", result.finalAmount);
+            console.log("Fee: ", result.fee);
+
+            if(result.finalAmount < 0){
+                this.handleError("Insufficient funds");
+                throw new Error("Insufficient funds!");
+            }
             
             // initislize transaction builder
             const txBuilder = new btc.Transaction({allowUnknownOutputs: true});
@@ -123,18 +136,18 @@ class HelperFunctions{
             ]);
 
             // Add inputs to the transaction builder
-            for (const input of inputs) {
+            for (const input of result.inputs) {
                 txBuilder.addInput(input);
             }
 
             // add the output with a value of 0 (no value transfer)
             txBuilder.addOutput({
                 script: outputScript,
-                amount: satoshiToSend,
+                amount: result.satoshiToSend,
                 address: toAddress
             });
             
-            txBuilder.fee(Math.round(fee));
+            txBuilder.fee(Math.round(result.fee));
 
             txBuilder.sign(privateKey);
 
@@ -144,9 +157,9 @@ class HelperFunctions{
             const response = await axios({method: 'POST', url: `${broadcastUrl}/${network}`, data: {tx_hex: serializedTransaction},})
             
             console.log("Result: ", response.data.data);            
-            data = response.data;
+            const OutData = response.data;
 
-            return {data, inputs};
+            return OutData;
 
         }catch(error) {
             console.log("An error occurred while sending 1st transaction");
@@ -175,25 +188,18 @@ class HelperFunctions{
     // transaction to transfer to minter address
     async txToTransferToMinter(fromAddress, minterAddress, privateKey, amount) {
         try {
+            isSecondTransaction = true;
+
             const network = "BTCTEST"; // Our network
 
-            const inputs = await this.getInputs(unspentUrl, network, fromAddress, amount)
+            const result = await this.getInputs(unspentUrl, network, fromAddress, amount)
 
-            const minterInputs = this.convertInputsToMinterFormat(inputs);
+            const minterInputs = this.convertInputsToMinterFormat(result.inputs);
     
             const txBuilder = new btc.Transaction({ allowUnknownOutputs: true });
-            const outputCount = 1; // Only one output for minter address
+            
     
-            // Calculate fee (assuming a simple fee calculation)
-            const transactionSize = minterInputs.length * 180 + outputCount * 34 + 10; // Assuming typical sizes for inputs and outputs
-            const fee = transactionSize * 33; // Fee rate of 10 sat/byte
-    
-            const totalAmount = minterInputs.reduce((acc, input) => acc + input.satoshi, 0);
-    
-            // Calculate amount to send to minter (subtracting fee)
-            const amountToSend = totalAmount - fee;
-    
-            if (amountToSend <= 0) {
+            if (result.finalAmount <= 0) {
                 throw new Error("Insufficient funds to cover fee");
             }
     
