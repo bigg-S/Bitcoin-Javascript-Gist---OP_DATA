@@ -4,7 +4,9 @@
     "@scure/bip39": "^1.2.2",
     "@scure/btc-signer": "^1.2.1",
     "axios": "^1.6.6",
-    "buffer": "^6.0.3"
+    "bitcoinjs-lib": "^6.1.5",
+    "buffer": "^6.0.3",
+    "cors-anywhere": "^0.4.4"
   },
   "devDependencies": {
     "@babel/core": "^7.23.9",
