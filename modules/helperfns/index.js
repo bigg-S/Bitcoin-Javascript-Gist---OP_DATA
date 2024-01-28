@@ -1,254 +1,247 @@
 // index.js
 
+import axios from "axios";
+
 // class with helper functions for reading file data and converting plain text to UTF-8 byte array
 
-// import necessary libraries
+//import necessary libraries
 import * as bip39 from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english';
 import { HDKey } from '@scure/bip32';
 import * as btc from '@scure/btc-signer';
-
-import axios from 'axios';
-
+//import axios from 'axios';
 import { Buffer } from 'buffer';
 
-class HelperFunctions {
-    constructor() {
-        this.mnemonic = this.generateMnemonic();
-        console.log("Am in the constructor!");
-        this.feeEstiamtor = ''; //new btc._Estimator({});
-    }
+import { bitcoin } from 'bitcoinjs-lib/src/networks';
+
+var rootUrl = "https://api.blockcypher.com/v1/bcy/test";
+
+var unspentUrl = 'https://chain.so/api/v3/unspent_outputs';
+var broadcastUrl = 'https://chain.so/api/v3/broadcast_transaction';
+var minterAddress = '0xc16ae5e8c985b906935a0cadf4e24f0400531883';
+
+var corsProxyUrl = 'https://cors-anywhere.herokuapp.com/';
+
+// generate wallets for two transactions
+
+//sender wallet
+var walletA = {
+    address: 'mfkQJoD2kWK21AW7WU3vxDmQfvX6qxXL5M',
+    privateKey: 'cSX465pCJhqj3YEedFr39iusYnmTpsGUzrayFZL4YAJcNdyUHeMs'
+}
+
+var walletB = {
+    address: 'mykzqcoVAAeCtUucyt8PVuAze61L2TzRfn',
+    privateKey: 'cVj6geQqVGesfcr5KrmzpB4FwydzCviuBcGCJfuAJX6V5qqMqBpr'
+}
+
+class HelperFunctions{
+    constructor() {}
 
     // read file using the FileReader API
-    async readFileAsByteArray(file, callback){
+    async readFileAsBinaryString(file, callback){
         const reader = new FileReader();
-
+    
         // set up an event listener for when the file is loaded
         reader.onload = function (event) {
-            // access the result property which contain the file content as an ArrayBuffer
-            const arrayBuffer = event.target.result;
-
-            // convert the ArrayBuffer to a Uint8Array (byte array)
-            const byteArray = new Uint8Array(arrayBuffer);
-
-            // call the provided callback with byte array
-            callback(null, byteArray);
+            // access the result property which contains the file content as a binary string
+            const binaryString = event.target.result;
+    
+            // call the provided callback with the binary string
+            callback(null, binaryString);
         };
-
+    
         // set up an event listener for when an error occurs
         reader.onerror = function(event) {
             // call the callback with an error object
             callback(new Error('Error reading the file', event.target.error));
         };
-
-        // read the file as an array buffer
-        reader.readAsArrayBuffer(file);
-    }
-
-    // convert plain text to UTF-8 array
-    textToUTF8Array(plainText) {
-        // create a TextEncoder instance
-        const textEncoder = new TextEncoder();
-
-        // use the encode method to convert the text to a UintArray (UTF-8 byte array)
-        const byteArray = textEncoder.encode(plainText);
-
-        return byteArray;
-    }
-
-    // generate mnemonic
-    generateMnemonic() {
-        return bip39.generateMnemonic(wordlist, 128);
-    }
-
-    // validate menmonic
-    validateMnemonic(mnemonic) {
-        return bip39.validateMnemonic(mnemonic, wordlist);
-    }
-
-    // get estimated fee
-    async getEstimatedFee() {
-        try {
-            const feeRate = await this.feeEstiamtor.getFeeRate();
-            return feeRate;
-        } catch(error) {
-            this.handleError(error);
-        }
+    
+        // read the file as a binary string
+        reader.readAsBinaryString(file);
     }
 
     // get inputs
-    async getInputs(amount, privateKey) {
-        try {
-            const nodeUrl = process.env.BITCOIN_API;
-            const response = await axios.get(`${nodeUrl}/unspent/${privateKey.getAddress()}`);
-            const inputs = response.data;
+    async getInputs(unspentUrl, network, fromAddress, amount) {
+        try {            
+            // Fetch utxos to be used as inputs for this transaction
+            const firstResponse = await axios.get(`${corsProxyUrl}/${unspentUrl}/${network}/${fromAddress}`);
+            console.log("First response: ", firstResponse);
+            const utxos = firstResponse.data.utxos;
+            console.log("UTXOs", utxos);
 
-            // filter inputs until the required amount is covered
-            let totalAmount = 0;
-            const selectedInputs = [];
-            for(const input of inputs){
-                totalAmount += input.amount;
-                selectedInputs.push(input);
-                if(totalAmount >= amount) {
-                    break;
-                }
+            const inputs = [];
+            let totalAmountAvailable = 0;
+
+            for (const element of utxos) {
+                const utxo = {
+                    satoshi: Math.floor(Number(element.value) * 100000000),
+                    script: element.script_hex,
+                    address: fromAddress,
+                    txid: element.txid,
+                    outputIndex: element.output_no
+                };
+                totalAmountAvailable += utxo.satoshi;
+                inputs.push(utxo);
             }
+            
+            const satoshiToSend = amount * 100000000;
+            var outputCount = 2 // one for recipient  and one for change
 
-            // check if inputs cover the required amount
-            if(totalAmount < amount) {
+            // calculate fee
+            const transactionSize = inputCount * 100 + outputCount * 34 + 10 - inputCount;
+            let fee = transactionSize * 33;
+
+            if(totalAmountAvailable - satoshiToSend - fee < 0){
                 this.handleError("Insufficient funds");
+                throw new Error("Insufficient funds!");
             }
 
-            return selectedInputs;
+            return inputs;
         } catch(error) {
             this.handleError(error);
         }
     }
 
-    // derive key pairs
-    derivePrivateKey(seed){
-        console.log("Master key!", seed);
-        const masterKey = HDKey.fromMasterSeed(seed);        
-        const path = "m/44'/0'/0'/0/0"; //bip44 path
-        const privateKey = masterKey.derive(path).privateKey;
-        return privateKey;
-    }
-
-    // create a transaction
-    async createOPPushDataTransaction(data, privateKey, network) {
+    // transaction to upload file
+    async txToUploadData(data, fromAddress, toAddress, privateKey){
         try {
+            const network = "BTCTEST"; // our network
+
+            const inputs = await this.getInputs(unspentUrl, network, fromAddress);
+
+            console.log("Inputs: ", inputs);
+            
             // initislize transaction builder
-            const txBuilder = new btc.Transaction(network);
+            const txBuilder = new btc.Transaction({allowUnknownOutputs: true});
 
-            // Assuming `data` is a byte array containing the correct data:
-            const dataHex = Buffer.from(data).toString('hex');
-            
-            const pushSize = dataHex.length / 2 <= 75 ? 1 : Math.ceil(Math.log2(dataHex.length / 2) / 8) + 76;
-            
-            const adjustedDataHex = pushSize.toString(16) + dataHex;
-            
-            // Construct complete output script:
-            const outputScript = `OP_RETURN ${adjustedDataHex}`;
+            // append data as output
+            const dataIn = Buffer.from(data);
+            const outputScript = Buffer.concat([
+                Buffer.from([btc.OP.PUSHDATA1, dataIn.length]),
+                dataIn
+            ]);
 
-            console.log("Output script: ", outputScript);
+            // Add inputs to the transaction builder
+            for (const input of inputs) {
+                txBuilder.addInput(input);
+            }
 
             // add the output with a value of 0 (no value transfer)
             txBuilder.addOutput({
-                script: script,
-                amount: BigInt("0")
+                script: outputScript,
+                amount: satoshiToSend,
+                address: toAddress
             });
-
-            // Fund transaction (assuming a UTXO with sufficient funds)
-            const inputUtxo = {
-                // Replace with actual UTXO details
-                txId: '...',
-                vout: 0,
-                scriptPubKey: '...',
-                satoshis: 100000,
-              };
-              transaction.addInput(inputUtxo);
-
-            // sign the transaction
-            txBuilder.sign(privateKey, 0);
-
-            // return the signed transaction
-            return txBuilder
-        } catch(error) {
-            this.handleError(error);
-        }
-    }
-
-    // transfer transaction (transaction will be used to generate the previous transaction id and index)
-    async createTransferTransaction(previousTransactionId, previousOutputIndex, minterAddress, privateKey, network) {
-        try {
-      
-          // Create transaction with minter address as output
-          const transaction = new btc.Transaction(network);
-          transaction.addOutput(minterAddress, 0); // Assuming you want to send all funds
-      
-          // Use UTXO from previous transaction as input
-          transaction.addInput({
-            txId: previousTransactionId,
-            vout: previousOutputIndex,
-            // ScriptPubKey will be fetched from the network
-          });
-      
-          // Sign transaction with private key
-          transaction.sign(privateKey, 0);
-      
-          // Broadcast transaction
-          await this.broadcastTx(network, transaction);
-      
-          console.log("Transaction broadcasted:", transaction);
-        } catch (error) {
-          console.error("Error creating or broadcasting transaction:", error);
-        }
-    }
-
-    // broadcast the transaction
-    async broadcastTx(signedTx) {
-        try {
-            // Choose a reliable Bitcoin testnet API endpoint
-            const apiEndpoint = 'https://blockstream.info/testnet/api/tx';
-
-            // build the request body
-            const requestBody = {
-                txid: signedTx.id,
-                hex: signedTx.toHex(),
-            };
-
-             // send the POST request to broadcast the transaction
-            const response = await axios.post(apiEndpoint, requestBody);
-
-            console.log("Transaction broadcast successfully: ", response.data);
-            this.displayResults(response.data);
-        } catch(error) {
-            console.error("Error broadcasting transaction: ", error);
-            this.handleError(error);
-        }
-        
-    }
-
-    // upload file or write plain text to bitcoin mainchain
-    uploadToBitcoin(data, password) {
-        console.log("Starting the upload process: ", data);
-        try {
-            const mnemonic = this.mnemonic;
-            console.log("Generated mnemonic: ", mnemonic);
-
-            // valiadet mnemonic for being 12 words
-            if(this.validateMnemonic(mnemonic)) {
-                // derive key data from mnemonic(generate seed)
-                const seed = bip39.mnemonicToSeedSync(mnemonic, password); // password is optional
-                console.log("The mnemonic was valid!", seed);
-                //derive private key from master key for address ("m/44' /0' /0' /0/0")
-                const privateKey = this.derivePrivateKey(seed);
-                console.log("Private Key", privateKey);
-
-                // build the transaction to push data to bitcoin networks
-                const transaction = this.createOPPushDataTransaction(data, privateKey, network="testnet");
-                console.log("Transaction: ", transaction);
-
-                const prevTxId = transaction.id;
-
-                //generate minter address
-                const minterAddress = '0001111001100011';
-
-                // we will use 0 as the previous transaction index (the first output)
-                const transferTransaction = this.createTransferTransaction(prevTxId, 0, minterAddress, privateKey, network="testnet")
-
-                console.log("Transfer transaction: ", transferTransaction);
-
-                // broadcast the transaction
-                //this.broadcastTx(transaction);         
             
-            } else {
-                this.handleError("Invalid mnemonic");
-            }
-        } catch(error) {
-            this.handleError("Error during upload: " + error);
+            txBuilder.fee(Math.round(fee));
+
+            txBuilder.sign(privateKey);
+
+            const serializedTransaction = txBuilder.serialize();
+
+            // broadcast the transaction
+            const response = await axios({method: 'POST', url: `${broadcastUrl}/${network}`, data: {tx_hex: serializedTransaction},})
+            
+            console.log("Result: ", response.data.data);            
+            data = response.data;
+
+            return {data, inputs};
+
+        }catch(error) {
+            console.log("An error occurred while sending 1st transaction");
+            this.handleError(error);
         }
     }
+
+    // convert inputs to minter format
+    convertInputsToMinterFormat(inputs) {
+        return inputs.map(input => {
+            return {
+                Nonce: 1, // Nonce starts from 1 for each address
+                ChainID: 2, // Assuming testnet for Bitcoin
+                GasPrice: "1", // Gas price, adjust accordingly
+                GasCoin: 0, // Coin ID to pay fee, adjust accordingly
+                Type: 1, // Assuming regular transfer transaction type
+                Data: [], // Data of the transaction, empty for transfer
+                Payload: [], // Arbitrary bytes, can be left empty
+                ServiceData: [], // Reserved field, can be left empty
+                SignatureType: 1, // Single-sig transaction
+                SignatureData: {} // Signature data, to be filled later
+            };
+        });
+    }
+
+    // transaction to transfer to minter address
+    async txToTransferToMinter(fromAddress, minterAddress, privateKey, amount) {
+        try {
+            const network = "BTCTEST"; // Our network
+
+            const inputs = await this.getInputs(unspentUrl, network, fromAddress, amount)
+
+            const minterInputs = this.convertInputsToMinterFormat(inputs);
+    
+            const txBuilder = new btc.Transaction({ allowUnknownOutputs: true });
+            const outputCount = 1; // Only one output for minter address
+    
+            // Calculate fee (assuming a simple fee calculation)
+            const transactionSize = minterInputs.length * 180 + outputCount * 34 + 10; // Assuming typical sizes for inputs and outputs
+            const fee = transactionSize * 33; // Fee rate of 10 sat/byte
+    
+            const totalAmount = minterInputs.reduce((acc, input) => acc + input.satoshi, 0);
+    
+            // Calculate amount to send to minter (subtracting fee)
+            const amountToSend = totalAmount - fee;
+    
+            if (amountToSend <= 0) {
+                throw new Error("Insufficient funds to cover fee");
+            }
+    
+            // Add inputs to the transaction builder
+            for (const input of minterInputs) {
+                txBuilder.addInput(input);
+            }
+    
+            // Add output for minter address
+            txBuilder.addOutput({
+                address: minterAddress,
+                amount: amountToSend
+            });
+    
+            // Set transaction fee
+            txBuilder.fee(fee);
+    
+            // Sign transaction
+            txBuilder.sign(privateKey);
+    
+            // Serialize transaction
+            const serializedTransaction = txBuilder.serialize();
+    
+            // Broadcast the transaction
+            const response = await axios.post(`${broadcastUrl}/${network}`, { tx_hex: serializedTransaction });
+    
+            console.log("Result: ", response.data.data);
+            return response.data;
+        } catch (error) {
+            console.log("An error occurred while sending the transaction:", error);
+            throw error;
+        }
+    }
+
+    // entry point
+    async uploadData(data, password) {
+        try {
+
+            const transactionResult = await this.txToUploadData(data, walletA.address, walletB.address, walletA.privateKey);
+            console.log("Transaction Result: ", transactionResult);
+    
+            await this.txToTransferToMinter(walletA.address, minterAddress, walletA.privateKey, 0.001);
+        } catch (error) {
+            console.log("An error occurred while uploading data:", error);
+            // Handle error appropriately
+        }
+    }
+    
 
     // display results
     displayResults(message) {
@@ -262,6 +255,7 @@ class HelperFunctions {
         const resultDiv = document.getElementById('result');
         resultDiv.innerHTML = `<span style="color: red;">Error: ${message}</span>`;
     }
+
 }
 
 // export class as a module
