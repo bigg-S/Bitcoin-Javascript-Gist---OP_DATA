@@ -6,7 +6,8 @@
     "axios": "^1.6.6",
     "bitcoinjs-lib": "^6.1.5",
     "buffer": "^6.0.3",
-    "cors-anywhere": "^0.4.4"
+    "cors-anywhere": "^0.4.4",
+    "secp256k1": "^5.0.0"
   },
   "devDependencies": {
     "@babel/core": "^7.23.9",
@@ -20,6 +21,7 @@
   },
   "scripts": {
     "start": "webpack serve --mode development --open",
-    "build": "webpack --mode development"
+    "build": "webpack --mode development",
+    "cors": "node node_modules/cors-anywhere/server.js"
   }
 }
