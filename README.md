@@ -1,4 +1,5 @@
 # Bitcoin-Javascript-Gist---OP_DATA
+
 Javascript code to use OP_PUSHDATA to upload files or write plain text to Bitcoin mainchain, test network, and regtest network.
 
 ## Table of Contents
@@ -39,12 +40,21 @@ Install Node.js
 
 ## Configuration
 
-    1. Run npm start to launch the page to your default browser
+1. **Start the cors-anywhere server:**
+
+    ```shell
+    npm run cors
+    ```
+
+2. **Serve the projet:**
+
+    ```shell
+    npm start
+    ```
 
 ## Usage
 
     1. Upload file or enter plain text in the provided fields
-
     2. Click on "Process Inputs" button to upload the data to bitcoin networks
 
 ## Acknowledgments

@@ -9,18 +9,21 @@ import * as bip39 from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english';
 import { HDKey } from '@scure/bip32';
 import * as btc from '@scure/btc-signer';
-//import axios from 'axios';
+
 import { Buffer } from 'buffer';
 
+import secp256k1 from 'secp256k1';
+
 import { bitcoin } from 'bitcoinjs-lib/src/networks';
+import { Hex } from "bitcoinjs-lib/src/types";
 
-var rootUrl = "https://api.blockcypher.com/v1/bcy/test";
+var rootUrl = "https://api.blockcypher.com/v1/bcy/test"; //blockcypher's test chain
 
-var unspentUrl = 'https://chain.so/api/v3/unspent_outputs';
+var unspentUrl = 'blockstream.info/testnet/api';
 var broadcastUrl = 'https://chain.so/api/v3/broadcast_transaction';
 var minterAddress = '0xc16ae5e8c985b906935a0cadf4e24f0400531883';
 
-var corsProxyUrl = 'https://cors-anywhere.herokuapp.com/';
+var corsProxyUrl = 'http://127.0.0.1:8080';
 
 // generate wallets for two transactions
 
@@ -38,7 +41,9 @@ var walletB = {
 var isSecondTransaction = false;
 
 class HelperFunctions{
-    constructor() {}
+    constructor() {
+        this.mnemonic = bip39.generateMnemonic(wordlist, 128);
+    }
 
     // read file using the FileReader API
     async readFileAsBinaryString(file, callback){
@@ -63,32 +68,46 @@ class HelperFunctions{
         reader.readAsBinaryString(file);
     }
 
+    // derive key pairs
+    derivePrivateKey(seed){
+        const rootKey = HDKey.fromMasterSeed(seed);
+        console.log("Root key: ", rootKey);
+        return rootKey.derive("m/44'/0'/0'/0/0").privateKey;
+    }
+
     // get inputs
-    async getInputs(unspentUrl, network, fromAddress, amount) {
-        try {            
-            // Fetch utxos to be used as inputs for this transaction
-            const firstResponse = await axios.get(`${corsProxyUrl}/${unspentUrl}/${network}/${fromAddress}`);
+    async getInputs(network, fromAddress, amount, privateKey) {
+        try {
+            // Fetch utxos to be used as inputs for this transaction 
+            const firstResponse = await axios.get(`${corsProxyUrl}/${unspentUrl}/address/${fromAddress}/utxo`);
             console.log("First response: ", firstResponse);
-            const utxos = firstResponse.data.utxos;
+            const utxos = firstResponse.data;
             console.log("UTXOs", utxos);
 
             const inputs = [];
             let totalAmountAvailable = 0;
             var outputCount = 2; // assume is first transaction be default(one for recipient  and one for change)
-
+            
+            var inputCount = 0; // loop counter
             for (const element of utxos) {
+                const rawTx = await axios.get(`${corsProxyUrl}/${unspentUrl}/tx/${element.txid}/hex`);
+                console.log("Raw Transaction: ", rawTx);
                 const utxo = {
-                    satoshi: Math.floor(Number(element.value) * 100000000),
-                    script: element.script_hex,
+                    satoshi: Math.floor(Number(element.value)),
+                    index: inputCount,
                     address: fromAddress,
                     txid: element.txid,
-                    outputIndex: element.output_no
+                    outputIndex: element.vout,
+                    address: fromAddress,
+                    witnessUtxo: {
+                        amount: Math.floor(Number(element.value)),
+                        script: btc.p2wpkh(secp256k1.publicKeyCreate(privateKey, true)).script,
+                    },
                 };
                 totalAmountAvailable += utxo.satoshi;
                 inputs.push(utxo);
+                inputCount += 1;
             }
-
-            const inputCount = inputs.length;
 
             if(!isSecondTransaction){
                 outputCount = 1; // Only one output for minter address
@@ -98,7 +117,7 @@ class HelperFunctions{
 
             // calculate fee
             const transactionSize = inputCount * 100 + outputCount * 34 + 10 - inputCount;
-            let fee = transactionSize * 33;            
+            let fee = transactionSize * 33;  // 33 satoshi per byte   
 
             const finalAmount = totalAmountAvailable - satoshiToSend - fee;
 
@@ -110,14 +129,14 @@ class HelperFunctions{
     }
 
     // transaction to upload file
-    async txToUploadData(data, fromAddress, toAddress, privateKey){
+    async txToUploadData(data, fromAddress, toAddress, privateKey, amount){
         try {
             const network = "BTCTEST"; // our network
 
-            const result = await this.getInputs(unspentUrl, network, fromAddress);
+            const result = await this.getInputs(network, fromAddress, amount, privateKey);
 
             console.log("Inputs: ", result.inputs);
-            console.log("Satosi to send: ", result.finalAmount);
+            console.log("Change: ", result.finalAmount);
             console.log("Fee: ", result.fee);
 
             if(result.finalAmount < 0){
@@ -135,31 +154,50 @@ class HelperFunctions{
                 dataIn
             ]);
 
+            console.log("Script: ", outputScript);
+
             // Add inputs to the transaction builder
             for (const input of result.inputs) {
                 txBuilder.addInput(input);
             }
 
+            console.log("Done setting inputs... ");
+
             // add the output with a value of 0 (no value transfer)
+            //const amountInsatoshi = BigInt(Math.round(amount * 100000000));
             txBuilder.addOutput({
                 script: outputScript,
-                amount: result.satoshiToSend,
+                amount: BigInt(amount * 100000000),
                 address: toAddress
             });
             
-            txBuilder.fee(Math.round(result.fee));
+            console.log("Done setting outputs...");
+
+            const change = BigInt(Math.floor(result.finalAmount));
+            
+            txBuilder.addOutputAddress(toAddress, change, "testnet"); // send chnage
+
+            console.log("Done setting fee...");
 
             txBuilder.sign(privateKey);
 
-            const serializedTransaction = txBuilder.serialize();
+            console.log("Done signing...");
+
+            txBuilder.finalize();
+
+            console.log("Transaction serialized...");
 
             // broadcast the transaction
-            const response = await axios({method: 'POST', url: `${broadcastUrl}/${network}`, data: {tx_hex: serializedTransaction},})
+            // const response = await axios({method: 'POST', url: `${broadcastUrl}/${network}`, data: {tx_hex: serializedTransaction},})
             
-            console.log("Result: ", response.data.data);            
-            const OutData = response.data;
+            // console.log("Transaction broadcasted...", response);
 
-            return OutData;
+            // console.log("Result: ", response.data.data);            
+            // const outData = response.data;
+
+            // console.log("Output data: ", outData);
+
+            //return outData;
 
         }catch(error) {
             console.log("An error occurred while sending 1st transaction");
@@ -192,7 +230,7 @@ class HelperFunctions{
 
             const network = "BTCTEST"; // Our network
 
-            const result = await this.getInputs(unspentUrl, network, fromAddress, amount)
+            const result = await this.getInputs(network, fromAddress, amount)
 
             const minterInputs = this.convertInputsToMinterFormat(result.inputs);
     
@@ -211,11 +249,11 @@ class HelperFunctions{
             // Add output for minter address
             txBuilder.addOutput({
                 address: minterAddress,
-                amount: amountToSend
+                amount: result.finalAmount
             });
     
             // Set transaction fee
-            txBuilder.fee(fee);
+            txBuilder.fee(result.fee);
     
             // Sign transaction
             txBuilder.sign(privateKey);
@@ -237,11 +275,24 @@ class HelperFunctions{
     // entry point
     async uploadData(data, password) {
         try {
+            const mnemonic = this.mnemonic;
+            console.log("Generated mnemonic: ", mnemonic);
 
-            const transactionResult = await this.txToUploadData(data, walletA.address, walletB.address, walletA.privateKey);
+            if(!bip39.validateMnemonic(mnemonic, wordlist)){
+                throw new Error("Invalid menmonic");
+            }
+
+            // derive key data from mnemonic(generate seed)
+            const seed = bip39.mnemonicToSeedSync(mnemonic, password); // password is optional
+
+            //derive private key from root key for address ("m/44' /0' /0' /0/0")
+            const privateKey = this.derivePrivateKey(seed);
+            console.log("Private Key", privateKey);
+
+            const transactionResult = await this.txToUploadData(data, walletA.address, walletB.address, privateKey, 0.0001);
             console.log("Transaction Result: ", transactionResult);
     
-            await this.txToTransferToMinter(walletA.address, minterAddress, walletA.privateKey, 0.001);
+            //await this.txToTransferToMinter(walletA.address, minterAddress, walletA.privateKey, 0.0001);
         } catch (error) {
             console.log("An error occurred while uploading data:", error);
             // Handle error appropriately
