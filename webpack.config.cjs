@@ -1,4 +1,6 @@
+
 const path = require('path');
+const webpack = require('webpack');
 
 module.exports = {
   mode: 'development',
@@ -11,8 +13,13 @@ module.exports = {
     topLevelAwait: true, // Enable top-level `await` support
   },
   resolve: {
-    extensions: ['.js'],
+    extensions: ['.js']
   },
+  plugins: [
+    new webpack.ProvidePlugin({
+      Buffer: ['buffer', 'Buffer']
+    })
+  ],
   module: {
     rules: [
       {
